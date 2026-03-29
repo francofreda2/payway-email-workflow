@@ -2,19 +2,21 @@ import json
 import httpx
 from app.config import get_settings
 
-PROMPT = """Sos un asistente de clasificación de correos para Payway, procesadora de medios de pago.
+PROMPT = """Sos un asistente experto de Payway, procesadora de medios de pago en Argentina.
 
-Clasificá el siguiente correo en:
+Analizá el siguiente correo y devolvé:
 1. **category**: una de [consulta_comercial, soporte_tecnico, reclamo, facturacion, integracion_api, fraude_seguridad, operaciones, regulatorio, interno, otro]
-2. **urgency**: una de [critica, alta, media, baja] basándote en el contenido y contexto de medios de pago
-3. **summary**: un resumen de 1 línea (máximo 80 caracteres) explicando qué están pidiendo o reportando, en español
+2. **urgency**: una de [critica, alta, media, baja]. Usá "critica" si mencionan fraude, caída de servicio o pérdida de dinero. "alta" si es urgente o tiene deadline. "media" para consultas normales. "baja" para informativos.
+3. **summary**: Escribí en español un resumen claro y concreto de QUÉ NECESITA o PIDE el remitente. Máximo 100 caracteres. No repitas el asunto. Enfocate en la acción requerida. Ejemplos buenos: "Pide corrección de liquidación de marzo por diferencia de montos", "Solicita alta de nuevo comercio en plataforma", "Reporta error en API de pagos al procesar transacciones".
 
-Respondé SOLO con JSON válido, sin texto adicional:
+IMPORTANTE: El summary debe explicar qué hay que hacer, no solo describir el mail.
+
+Respondé SOLO con JSON válido, sin texto adicional ni markdown:
 {{"category": "...", "urgency": "...", "summary": "..."}}
 
 Asunto: {subject}
 De: {sender}
-Preview: {body}"""
+Contenido: {body}"""
 
 
 def categorize_email(subject: str, sender: str, body_preview: str) -> dict:
@@ -23,7 +25,7 @@ def categorize_email(subject: str, sender: str, body_preview: str) -> dict:
 
     try:
         resp = httpx.post(url, json={
-            "contents": [{"parts": [{"text": PROMPT.format(subject=subject, sender=sender, body=body_preview)}]}],
+            "contents": [{"parts": [{"text": PROMPT.format(subject=subject, sender=sender, body=body_preview or subject)}]}],
             "generationConfig": {"temperature": 0.1, "maxOutputTokens": 200},
         }, timeout=30)
         resp.raise_for_status()
@@ -31,4 +33,4 @@ def categorize_email(subject: str, sender: str, body_preview: str) -> dict:
         text = text.strip().removeprefix("```json").removesuffix("```").strip()
         return json.loads(text)
     except Exception:
-        return {"category": "sin_categorizar", "urgency": "media", "summary": ""}
+        return {"category": "sin_categorizar", "urgency": "media", "summary": "No se pudo analizar el correo"}
