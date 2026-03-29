@@ -1,7 +1,11 @@
+import os
+from pathlib import Path
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from fastapi import FastAPI, Depends, Query, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
 from sqlalchemy import func
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
@@ -27,6 +31,11 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="Payway Email Workflow", lifespan=lifespan)
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
+
+STATIC_DIR = Path(__file__).resolve().parent.parent / "static"
+
+if STATIC_DIR.exists():
+    app.mount("/assets", StaticFiles(directory=STATIC_DIR / "assets"), name="assets")
 
 
 def classify_in_background(email_id: str, subject: str, sender: str, body: str):
@@ -169,3 +178,15 @@ def get_stats(db: Session = Depends(get_db)):
         by_urgency=by_urg,
         avg_age_hours=round(sum(ages) / len(ages), 1) if ages else 0,
     )
+
+
+# --- Serve frontend SPA (catch-all, must be last) ---
+@app.get("/{full_path:path}")
+def serve_spa(full_path: str):
+    file = STATIC_DIR / full_path
+    if file.exists() and file.is_file():
+        return FileResponse(file)
+    index = STATIC_DIR / "index.html"
+    if index.exists():
+        return FileResponse(index)
+    return {"detail": "Frontend not built yet. Run: cd frontend && npm run build"}
