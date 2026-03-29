@@ -8,6 +8,7 @@ class EmailOut(BaseModel):
     sender: str
     received_at: datetime
     body_preview: str | None
+    summary: str | None
     category: str
     urgency: str
     status: str

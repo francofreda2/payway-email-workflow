@@ -14,6 +14,7 @@ class Email(Base):
     sender = Column(String, nullable=False)
     received_at = Column(DateTime, nullable=False)
     body_preview = Column(Text)
+    summary = Column(Text, nullable=True)
     category = Column(String, default="sin_categorizar")
     urgency = Column(String, default="media")
     status = Column(String, default="pendiente")

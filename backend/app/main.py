@@ -6,6 +6,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy import func
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
+import httpx
 from app.config import get_settings
 from app.models import Email, SessionLocal, get_db
 from app.schemas import EmailOut, EmailUpdate, StatsOut
@@ -36,6 +37,7 @@ def classify_in_background(email_id: str, subject: str, sender: str, body: str):
         if email:
             email.category = classification.get("category", "sin_categorizar")
             email.urgency = classification.get("urgency", "media")
+            email.summary = classification.get("summary", "")
             db.commit()
     finally:
         db.close()
@@ -112,6 +114,38 @@ def update_email(email_id: str, data: EmailUpdate, db: Session = Depends(get_db)
     db.commit()
     db.refresh(email)
     return email
+
+
+# --- Chat IA: preguntas sobre los correos ---
+from pydantic import BaseModel as PydanticBaseModel
+
+class ChatRequest(PydanticBaseModel):
+    question: str
+
+@app.post("/api/chat")
+def chat_with_ai(req: ChatRequest, db: Session = Depends(get_db)):
+    emails = db.query(Email).order_by(Email.received_at.desc()).limit(50).all()
+    context = "\n".join([f"- [{e.status}] De: {e.sender} | Asunto: {e.subject} | Categoría: {e.category} | Urgencia: {e.urgency} | Resumen: {e.summary or 'N/A'} | Asignado: {e.assigned_to or 'Sin asignar'} | Antigüedad: {e.id}" for e in emails])
+
+    s = get_settings()
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/{s.gemini_model}:generateContent?key={s.gemini_api_key}"
+    prompt = f"""Sos un asistente de gestión de correos de Payway (procesadora de medios de pago). Tenés acceso al backlog de correos actual. Respondé en español, de forma concisa y útil.
+
+Backlog actual ({len(emails)} correos):
+{context}
+
+Pregunta del usuario: {req.question}"""
+
+    try:
+        resp = httpx.post(url, json={
+            "contents": [{"parts": [{"text": prompt}]}],
+            "generationConfig": {"temperature": 0.3, "maxOutputTokens": 500},
+        }, timeout=30)
+        resp.raise_for_status()
+        text = resp.json()["candidates"][0]["content"]["parts"][0]["text"]
+        return {"answer": text}
+    except Exception as ex:
+        return {"answer": f"Error al consultar IA: {str(ex)}"}
 
 
 @app.get("/api/stats", response_model=StatsOut)
