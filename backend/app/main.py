@@ -1,4 +1,5 @@
 import os
+import logging
 from pathlib import Path
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
@@ -10,6 +11,13 @@ from sqlalchemy.orm import Session
 from sqlalchemy import func
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
+# Configurar logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
+
 import httpx
 from app.config import get_settings
 from app.models import Email, SessionLocal, get_db
@@ -17,6 +25,67 @@ from app.schemas import EmailOut, EmailUpdate, StatsOut
 from app.outlook import IncomingEmail
 from app.classifier import categorize_email
 from app.notifications import check_pending_alerts
+
+@app.get("/api/ai-status")
+def get_ai_status():
+    """Diagnóstico del estado de la IA"""
+    s = get_settings()
+    
+    status = {
+        "gemini_configured": bool(s.gemini_api_key),
+        "gemini_model": s.gemini_model,
+        "api_key_length": len(s.gemini_api_key) if s.gemini_api_key else 0
+    }
+    
+    # Test de conectividad si está configurado
+    if s.gemini_api_key:
+        try:
+            url = f"https://generativelanguage.googleapis.com/v1beta/models/{s.gemini_model}:generateContent?key={s.gemini_api_key}"
+            resp = httpx.post(url, json={
+                "contents": [{"parts": [{"text": "Test"}]}],
+                "generationConfig": {"temperature": 0.1, "maxOutputTokens": 10},
+            }, timeout=10)
+            status["api_test"] = "success" if resp.status_code == 200 else f"error_{resp.status_code}"
+            status["api_response"] = resp.text[:200] if resp.status_code != 200 else "OK"
+        except Exception as e:
+            status["api_test"] = "connection_error"
+            status["api_response"] = str(e)[:200]
+    else:
+        status["api_test"] = "not_configured"
+        status["api_response"] = "Gemini API key not set in .env file"
+    
+    return status
+
+
+@app.get("/api/debug/recent-emails")
+def get_recent_emails_debug(db: Session = Depends(get_db)):
+    """Debug: Ver últimos correos y su estado de clasificación"""
+    emails = db.query(Email).order_by(Email.received_at.desc()).limit(10).all()
+    
+    result = []
+    for email in emails:
+        result.append({
+            "id": email.id,
+            "subject": email.subject,
+            "sender": email.sender,
+            "received_at": email.received_at.isoformat(),
+            "category": email.category,
+            "urgency": email.urgency,
+            "summary": email.summary,
+            "body_preview": email.body_preview[:100] if email.body_preview else None,
+            "synced_at": email.synced_at.isoformat() if email.synced_at else None,
+            "updated_at": email.updated_at.isoformat() if email.updated_at else None
+        })
+    
+    return {
+        "total_emails": len(result),
+        "emails": result,
+        "classification_stats": {
+            "classified": len([e for e in emails if e.summary and e.summary != ""]),
+            "unclassified": len([e for e in emails if not e.summary or e.summary == ""]),
+            "sin_categorizar": len([e for e in emails if e.category == "sin_categorizar"])
+        }
+    }
 
 scheduler = AsyncIOScheduler()
 
@@ -69,8 +138,11 @@ def should_exclude_email(subject: str, sender: str) -> bool:
 
 
 def classify_in_background(email_id: str, subject: str, sender: str, body: str):
+    import logging
+    logger = logging.getLogger(__name__)
     db = SessionLocal()
     try:
+        logger.info(f"Starting background classification for email {email_id}")
         classification = categorize_email(subject=subject, sender=sender, body_preview=body)
         email = db.query(Email).filter_by(id=email_id).first()
         if email:
@@ -78,6 +150,12 @@ def classify_in_background(email_id: str, subject: str, sender: str, body: str):
             email.urgency = classification.get("urgency", "media")
             email.summary = classification.get("summary", "")
             db.commit()
+            logger.info(f"Email {email_id} classified successfully")
+        else:
+            logger.warning(f"Email {email_id} not found for classification")
+    except Exception as e:
+        logger.error(f"Error in background classification for {email_id}: {e}")
+        db.rollback()
     finally:
         db.close()
 
@@ -85,20 +163,26 @@ def classify_in_background(email_id: str, subject: str, sender: str, body: str):
 # --- Webhook: Power Automate manda correos acá ---
 @app.post("/api/emails/ingest")
 def receive_email(data: IncomingEmail, background: BackgroundTasks, db: Session = Depends(get_db)):
+    logger.info(f"Received email: {data.subject} from {data.sender}")
+    
     # Verificar si el correo debe ser excluido
     if should_exclude_email(data.subject, data.sender):
+        logger.info(f"Email excluded by filters: {data.subject}")
         return {"status": "excluded", "reason": "Email filtered out", "subject": data.subject}
     
     if db.query(Email).filter_by(id=data.message_id).first():
+        logger.info(f"Duplicate email ignored: {data.message_id}")
         return {"status": "duplicate", "id": data.message_id}
 
     if data.received_at:
         try:
             received = datetime.fromisoformat(data.received_at.replace("Z", "+00:00"))
-        except Exception:
+        except Exception as e:
+            logger.warning(f"Invalid received_at format: {data.received_at}, using current time. Error: {e}")
             received = datetime.now(timezone.utc)
     else:
         received = datetime.now(timezone.utc)
+        
     email = Email(
         id=data.message_id,
         subject=data.subject,
@@ -110,11 +194,20 @@ def receive_email(data: IncomingEmail, background: BackgroundTasks, db: Session 
         has_reply=False,
         importance=data.importance,
     )
-    db.add(email)
-    db.commit()
-
-    background.add_task(classify_in_background, data.message_id, data.subject, data.sender, data.body)
-    return {"status": "created", "id": email.id}
+    
+    try:
+        db.add(email)
+        db.commit()
+        logger.info(f"Email saved to database: {data.message_id}")
+        
+        background.add_task(classify_in_background, data.message_id, data.subject, data.sender, data.body)
+        logger.info(f"Classification task queued for: {data.message_id}")
+        
+        return {"status": "created", "id": email.id}
+    except Exception as e:
+        logger.error(f"Error saving email to database: {e}")
+        db.rollback()
+        return {"status": "error", "message": str(e)}
 
 
 @app.post("/api/emails/reclassify")
@@ -171,11 +264,17 @@ def list_emails(
     category: str | None = None,
     urgency: str | None = None,
     search: str | None = None,
+    include_closed: bool = False,  # Por defecto no incluir cerrados
     skip: int = 0,
     limit: int = Query(default=50, le=200),
     db: Session = Depends(get_db),
 ):
     q = db.query(Email)
+    
+    # Excluir cerrados por defecto, a menos que se solicite explícitamente
+    if not include_closed and status != "cerrado":
+        q = q.filter(Email.status != "cerrado")
+    
     if status:
         q = q.filter(Email.status == status)
     if category:

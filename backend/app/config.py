@@ -4,7 +4,7 @@ from functools import lru_cache
 
 class Settings(BaseSettings):
     gemini_api_key: str = ""
-    gemini_model: str = "gemini-2.0-flash"
+    gemini_model: str = "gemini-1.5-flash"  # Modelo con cuota más generosa
     notification_email: str = ""
     alert_hours_threshold: int = 24
     database_url: str = "sqlite:///./backlog.db"

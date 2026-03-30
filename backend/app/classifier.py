@@ -1,6 +1,9 @@
 import json
 import httpx
+import logging
 from app.config import get_settings
+
+logger = logging.getLogger(__name__)
 
 PROMPT = """Sos un asistente experto de Payway, procesadora de medios de pago en Argentina.
 
@@ -21,16 +24,51 @@ Contenido: {body}"""
 
 def categorize_email(subject: str, sender: str, body_preview: str) -> dict:
     s = get_settings()
+    
+    if not s.gemini_api_key:
+        logger.warning("Gemini API key not configured, returning default classification")
+        return {"category": "sin_categorizar", "urgency": "media", "summary": "API key no configurada"}
+    
     url = f"https://generativelanguage.googleapis.com/v1beta/models/{s.gemini_model}:generateContent?key={s.gemini_api_key}"
-
+    
+    payload = {
+        "contents": [{"parts": [{"text": PROMPT.format(subject=subject, sender=sender, body=body_preview or subject)}]}],
+        "generationConfig": {"temperature": 0.1, "maxOutputTokens": 200},
+    }
+    
     try:
-        resp = httpx.post(url, json={
-            "contents": [{"parts": [{"text": PROMPT.format(subject=subject, sender=sender, body=body_preview or subject)}]}],
-            "generationConfig": {"temperature": 0.1, "maxOutputTokens": 200},
-        }, timeout=30)
-        resp.raise_for_status()
-        text = resp.json()["candidates"][0]["content"]["parts"][0]["text"]
+        logger.info(f"Classifying email: {subject[:50]}...")
+        resp = httpx.post(url, json=payload, timeout=30)
+        
+        if resp.status_code != 200:
+            logger.error(f"Gemini API error {resp.status_code}: {resp.text[:200]}")
+            return {"category": "sin_categorizar", "urgency": "media", "summary": f"Error API {resp.status_code}"}
+        
+        response_data = resp.json()
+        
+        if "candidates" not in response_data or not response_data["candidates"]:
+            logger.error(f"Invalid Gemini response structure: {response_data}")
+            return {"category": "sin_categorizar", "urgency": "media", "summary": "Respuesta inválida de IA"}
+        
+        text = response_data["candidates"][0]["content"]["parts"][0]["text"]
         text = text.strip().removeprefix("```json").removesuffix("```").strip()
-        return json.loads(text)
-    except Exception:
-        return {"category": "sin_categorizar", "urgency": "media", "summary": "No se pudo analizar el correo"}
+        
+        result = json.loads(text)
+        logger.info(f"Classification successful: {result}")
+        return result
+        
+    except httpx.TimeoutException:
+        logger.error("Gemini API timeout")
+        return {"category": "sin_categorizar", "urgency": "media", "summary": "Timeout de IA"}
+    except httpx.RequestError as e:
+        logger.error(f"Gemini API request error: {e}")
+        return {"category": "sin_categorizar", "urgency": "media", "summary": "Error de conexión"}
+    except json.JSONDecodeError as e:
+        logger.error(f"Invalid JSON from Gemini: {text[:100]}... Error: {e}")
+        return {"category": "sin_categorizar", "urgency": "media", "summary": "JSON inválido de IA"}
+    except KeyError as e:
+        logger.error(f"Missing key in Gemini response: {e}")
+        return {"category": "sin_categorizar", "urgency": "media", "summary": "Estructura de respuesta inválida"}
+    except Exception as e:
+        logger.error(f"Unexpected error in classification: {type(e).__name__}: {e}")
+        return {"category": "sin_categorizar", "urgency": "media", "summary": "Error inesperado"}

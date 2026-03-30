@@ -284,13 +284,17 @@ function ChatPanel({ open, onClose }) {
 function App() {
   const [emails, setEmails] = useState([])
   const [stats, setStats] = useState(null)
-  const [filters, setFilters] = useState({ status:'', category:'', urgency:'', search:'' })
+  const [filters, setFilters] = useState({ status:'', category:'', urgency:'', search:'', include_closed:false })
   const [chatOpen, setChatOpen] = useState(false)
   const [notesEmail, setNotesEmail] = useState(null)
   const [filtersOpen, setFiltersOpen] = useState(false)
 
   const fetchData = useCallback(async () => {
-    const params = new URLSearchParams(Object.fromEntries(Object.entries(filters).filter(([,v]) => v)))
+    const params = new URLSearchParams()
+    Object.entries(filters).forEach(([k,v]) => {
+      if (v !== '' && v !== false) params.set(k, v)
+      if (k === 'include_closed' && v === false) params.set(k, 'false')
+    })
     const [eRes, sRes] = await Promise.all([fetch(`${API}/emails?${params}`), fetch(`${API}/stats`)])
     setEmails(await eRes.json())
     setStats(await sRes.json())
@@ -315,7 +319,66 @@ function App() {
     }
   }
   
-  const resetFilters = () => setFilters({ status:'', category:'', urgency:'', search:'' })
+  const checkAIStatus = async () => {
+    try {
+      const res = await fetch(`${API}/ai-status`)
+      const data = await res.json()
+      
+      let message = '🤖 Estado de la IA:\n\n'
+      
+      if (!data.gemini_configured) {
+        message += '❌ Gemini API no configurada\n'
+        message += '• Falta GEMINI_API_KEY en .env\n'
+        message += '• Obtené tu API key en: https://aistudio.google.com/app/apikey'
+      } else {
+        message += `✅ Gemini API configurada (${data.api_key_length} chars)\n`
+        message += `📋 Modelo: ${data.gemini_model}\n\n`
+        
+        if (data.api_test === 'success') {
+          message += '✅ Conexión exitosa con Gemini'
+        } else if (data.api_test === 'not_configured') {
+          message += '❌ API key no configurada'
+        } else if (data.api_test === 'connection_error') {
+          message += `❌ Error de conexión: ${data.api_response}`
+        } else {
+          message += `❌ Error API (${data.api_test}): ${data.api_response}`
+        }
+      }
+      
+      alert(message)
+    } catch {
+      alert('❌ Error al verificar estado de IA')
+    }
+  }
+  
+  const testAIClassification = async () => {
+    try {
+      const res = await fetch(`${API}/ai-test`, { method: 'POST' })
+      const data = await res.json()
+      
+      let message = '🧪 Prueba de Clasificación IA:\n\n'
+      message += `📧 Email de prueba:\n`
+      message += `Asunto: ${data.test_email.subject}\n`
+      message += `De: ${data.test_email.sender}\n\n`
+      
+      if (data.status === 'success') {
+        message += '✅ Clasificación exitosa:\n'
+        message += `🏷️ Categoría: ${data.classification.category}\n`
+        message += `⚡ Urgencia: ${data.classification.urgency}\n`
+        message += `📝 Resumen: ${data.classification.summary}`
+      } else {
+        message += `❌ Error en clasificación:\n`
+        message += `Tipo: ${data.error_type}\n`
+        message += `Detalle: ${data.error}`
+      }
+      
+      alert(message)
+    } catch {
+      alert('❌ Error al probar clasificación de IA')
+    }
+  }
+  
+  const resetFilters = () => setFilters({ status:'', category:'', urgency:'', search:'', include_closed:false })
   const hasFilters = Object.values(filters).some(v => v)
 
   const ages = emails.map(e => e.age_hours)
@@ -347,6 +410,8 @@ function App() {
         <div style={{ display:'flex', alignItems:'center', gap:12 }}>
           <span style={{ color:'rgba(255,255,255,0.35)', fontSize:10, fontWeight:500 }}>Auto-sync · IA Clasificación</span>
           <button onClick={() => setFiltersOpen(true)} style={{ background:'rgba(255,255,255,0.06)', border:'1px solid rgba(255,255,255,0.1)', color:'rgba(255,255,255,0.7)', borderRadius:6, padding:'6px 12px', fontSize:11, fontWeight:600, cursor:'pointer', fontFamily:'inherit' }}>🛡️ Filtros</button>
+          <button onClick={checkAIStatus} style={{ background:'rgba(255,255,255,0.06)', border:'1px solid rgba(255,255,255,0.1)', color:'rgba(255,255,255,0.7)', borderRadius:6, padding:'6px 12px', fontSize:11, fontWeight:600, cursor:'pointer', fontFamily:'inherit' }}>🔍 IA Status</button>
+          <button onClick={testAIClassification} style={{ background:'rgba(255,255,255,0.08)', border:'1px solid rgba(255,255,255,0.12)', color:'rgba(255,255,255,0.8)', borderRadius:6, padding:'6px 12px', fontSize:11, fontWeight:600, cursor:'pointer', fontFamily:'inherit' }}>🧪 Test IA</button>
           <button onClick={reclassifyEmails} style={{ background:'rgba(255,255,255,0.08)', border:'1px solid rgba(255,255,255,0.12)', color:'rgba(255,255,255,0.8)', borderRadius:6, padding:'6px 12px', fontSize:11, fontWeight:600, cursor:'pointer', fontFamily:'inherit' }}>Re-clasificar</button>
           <button onClick={() => setChatOpen(o => !o)} style={{ background:'rgba(255,255,255,0.1)', border:'1px solid rgba(255,255,255,0.15)', color:'#fff', borderRadius:8, padding:'8px 16px', fontSize:12, fontWeight:600, cursor:'pointer', fontFamily:'inherit', display:'flex', alignItems:'center', gap:6 }}>🤖 Asistente IA</button>
         </div>
@@ -378,6 +443,13 @@ function App() {
               </select>
             </div>
           ))}
+          <div>
+            <div style={{ fontSize:10, textTransform:'uppercase', letterSpacing:1, color:PW.muted, fontWeight:600, marginBottom:5 }}>Cerrados</div>
+            <label style={{ display:'flex', alignItems:'center', gap:8, cursor:'pointer', padding:'8px 12px', background:filters.include_closed?`${PW.blue}15`:PW.bg, border:`1.5px solid ${filters.include_closed?PW.blue:PW.border}`, borderRadius:7, fontSize:11, fontWeight:500, color:filters.include_closed?PW.blue:PW.text, transition:'all 0.2s ease' }}>
+              <input type="checkbox" checked={filters.include_closed} onChange={e => setFilters(prev => ({...prev, include_closed:e.target.checked}))} style={{ margin:0, accentColor:PW.blue }} />
+              Mostrar cerrados
+            </label>
+          </div>
           {hasFilters && <button onClick={resetFilters} style={{ padding:'7px 12px', borderRadius:7, fontSize:11, fontFamily:'inherit', fontWeight:600, cursor:'pointer', border:`1.5px dashed ${PW.border}`, background:'transparent', color:PW.muted }}>✕ Limpiar</button>}
         </div>
 
@@ -435,37 +507,70 @@ function App() {
         </div>
 
         {/* TABLE */}
-        <div style={{...card, marginBottom:0}}>
-          <div style={{...cardT, justifyContent:'space-between'}}>
+        <div style={{...card, marginBottom:0, padding:0}}>
+          <div style={{...cardT, justifyContent:'space-between', margin:'20px 20px 0 20px', paddingBottom:16}}>
             <span style={{ display:'flex', alignItems:'center', gap:8 }}><div style={dot} />Detalle de Correos</span>
-            <span style={{ fontSize:10, color:PW.muted, fontWeight:600 }}>{emails.length} fila{emails.length!==1?'s':''}</span>
+            <span style={{ fontSize:10, color:PW.muted, fontWeight:600 }}>{emails.length} fila{emails.length!==1?'s':''} {!filters.include_closed && <span style={{color:PW.blue}}>· cerrados ocultos</span>}</span>
           </div>
-          <div style={{ overflowX:'auto' }}>
+          <div style={{ overflowX:'auto', borderRadius:'0 0 10px 10px' }}>
             <table style={{ width:'100%', borderCollapse:'collapse', fontSize:12 }}>
-              <thead><tr>
+              <thead><tr style={{ background:`linear-gradient(135deg, ${PW.bg}, ${PW.bg2})`, borderTop:`1px solid ${PW.border}` }}>
                 {['Antig.','Asunto','Resumen IA','Remitente','Categoría','Urgencia','Estado','Asignado','Notas'].map(h =>
-                  <th key={h} style={{ textAlign:'left', fontSize:10, fontWeight:700, textTransform:'uppercase', letterSpacing:0.8, color:PW.muted, borderBottom:`2px solid ${PW.border}`, padding:'8px 10px', background:PW.bg, whiteSpace:'nowrap' }}>{h}</th>
+                  <th key={h} style={{ textAlign:'left', fontSize:10, fontWeight:700, textTransform:'uppercase', letterSpacing:0.8, color:PW.text, borderBottom:`2px solid ${PW.border}`, padding:'14px 16px', whiteSpace:'nowrap', position:'sticky', top:0, background:`linear-gradient(135deg, ${PW.bg}, ${PW.bg2})`, zIndex:10 }}>{h}</th>
                 )}
               </tr></thead>
               <tbody>
-                {emails.map(e => (
-                  <tr key={e.id} style={{ background: e.age_hours > 24 && e.status === 'pendiente' ? PW.light : 'transparent' }}>
-                    <td style={{ padding:'10px', borderBottom:`1px solid ${PW.bg}` }}>{ageBadge(e.age_hours)}</td>
-                    <td style={{ padding:'10px', borderBottom:`1px solid ${PW.bg}`, maxWidth:200, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap', fontWeight:600 }} title={e.body_preview}>{e.subject}</td>
-                    <td style={{ padding:'10px', borderBottom:`1px solid ${PW.bg}`, maxWidth:200, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap', fontSize:11, color:PW.mid, fontStyle:'italic' }} title={e.summary}>{e.summary || '⏳ clasificando...'}</td>
-                    <td style={{ padding:'10px', borderBottom:`1px solid ${PW.bg}`, whiteSpace:'nowrap', fontWeight:500 }}>{e.sender}</td>
-                    <td style={{ padding:'10px', borderBottom:`1px solid ${PW.bg}` }}><span style={tag()}>{(e.category||'').replace(/_/g,' ')}</span></td>
-                    <td style={{ padding:'10px', borderBottom:`1px solid ${PW.bg}` }}><span style={urgStyle(e.urgency)}>{e.urgency}</span></td>
-                    <td style={{ padding:'10px', borderBottom:`1px solid ${PW.bg}` }}>
-                      <select value={e.status} onChange={ev => updateEmail(e.id, { status:ev.target.value })} style={{...sel, fontSize:11, padding:'4px 8px'}}>
+                {emails.map((e, index) => (
+                  <tr key={e.id} style={{ 
+                    background: e.age_hours > 48 && e.status === 'pendiente' ? `${PW.red}08` : 
+                               e.age_hours > 24 && e.status === 'pendiente' ? `${PW.blue}08` : 
+                               index % 2 === 0 ? PW.white : `${PW.bg}40`,
+                    borderLeft: e.age_hours > 48 && e.status === 'pendiente' ? `4px solid ${PW.red}` : 
+                               e.age_hours > 24 && e.status === 'pendiente' ? `4px solid ${PW.blue}` : '4px solid transparent',
+                    transition: 'all 0.2s ease'
+                  }} onMouseEnter={ev => ev.target.style.background = PW.light} onMouseLeave={ev => ev.target.style.background = e.age_hours > 48 && e.status === 'pendiente' ? `${PW.red}08` : e.age_hours > 24 && e.status === 'pendiente' ? `${PW.blue}08` : index % 2 === 0 ? PW.white : `${PW.bg}40`}>
+                    <td style={{ padding:'14px 16px', borderBottom:`1px solid ${PW.bg2}`, verticalAlign:'middle' }}>{ageBadge(e.age_hours)}</td>
+                    <td style={{ padding:'14px 16px', borderBottom:`1px solid ${PW.bg2}`, maxWidth:280, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap', fontWeight:600, color:PW.text, verticalAlign:'middle' }} title={e.body_preview}>
+                      <div style={{ display:'flex', alignItems:'center', gap:8 }}>
+                        <div style={{ width:3, height:16, borderRadius:2, background: e.urgency === 'critica' ? PW.red : e.urgency === 'alta' ? '#F59E0B' : PW.blue, flexShrink:0 }} />
+                        {e.subject}
+                      </div>
+                    </td>
+                    <td style={{ padding:'14px 16px', borderBottom:`1px solid ${PW.bg2}`, maxWidth:220, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap', fontSize:11, color:PW.mid, fontStyle:'italic', verticalAlign:'middle' }} title={e.summary}>
+                      {e.summary ? (
+                        <span style={{ display:'flex', alignItems:'center', gap:6 }}>
+                          <span style={{ color:'#10B981', fontSize:12 }}>✓</span>
+                          {e.summary}
+                        </span>
+                      ) : (
+                        <span style={{ display:'flex', alignItems:'center', gap:6, color:PW.muted }}>
+                          <span style={{ fontSize:12 }}>⏳</span>
+                          clasificando...
+                        </span>
+                      )}
+                    </td>
+                    <td style={{ padding:'14px 16px', borderBottom:`1px solid ${PW.bg2}`, whiteSpace:'nowrap', fontWeight:500, color:PW.text, verticalAlign:'middle' }}>
+                      <div style={{ display:'flex', alignItems:'center', gap:8 }}>
+                        <div style={{ width:24, height:24, borderRadius:'50%', background:`linear-gradient(135deg, ${PW.blue}, ${PW.mid})`, display:'flex', alignItems:'center', justifyContent:'center', color:'white', fontSize:10, fontWeight:700, flexShrink:0 }}>
+                          {e.sender.charAt(0).toUpperCase()}
+                        </div>
+                        <span style={{ fontSize:11 }}>{e.sender}</span>
+                      </div>
+                    </td>
+                    <td style={{ padding:'14px 16px', borderBottom:`1px solid ${PW.bg2}`, verticalAlign:'middle' }}><span style={tag()}>{(e.category||'').replace(/_/g,' ')}</span></td>
+                    <td style={{ padding:'14px 16px', borderBottom:`1px solid ${PW.bg2}`, verticalAlign:'middle' }}><span style={urgStyle(e.urgency)}>{e.urgency}</span></td>
+                    <td style={{ padding:'14px 16px', borderBottom:`1px solid ${PW.bg2}`, verticalAlign:'middle' }}>
+                      <select value={e.status} onChange={ev => updateEmail(e.id, { status:ev.target.value })} style={{...sel, fontSize:11, padding:'6px 10px', minWidth:120}}>
                         {STATUSES.map(s => <option key={s} value={s}>{SI[s]} {SL[s]}</option>)}
                       </select>
                     </td>
-                    <td style={{ padding:'10px', borderBottom:`1px solid ${PW.bg}` }}>
-                      <input defaultValue={e.assigned_to||''} placeholder="Asignar..." onBlur={ev => { if (ev.target.value !== (e.assigned_to||'')) updateEmail(e.id, { assigned_to:ev.target.value }) }} style={{...inp, width:100, fontSize:11, padding:'4px 8px'}} />
+                    <td style={{ padding:'14px 16px', borderBottom:`1px solid ${PW.bg2}`, verticalAlign:'middle' }}>
+                      <input defaultValue={e.assigned_to||''} placeholder="Asignar..." onBlur={ev => { if (ev.target.value !== (e.assigned_to||'')) updateEmail(e.id, { assigned_to:ev.target.value }) }} style={{...inp, width:130, fontSize:11, padding:'8px 12px'}} />
                     </td>
-                    <td style={{ padding:'10px', borderBottom:`1px solid ${PW.bg}` }}>
-                      <button onClick={() => setNotesEmail(e)} style={{ background:e.notes?PW.light:'none', border:e.notes?`1px solid ${PW.border}`:'none', borderRadius:6, cursor:'pointer', fontSize:14, padding:'2px 6px' }} title={e.notes||'Agregar nota'}>{e.notes ? '📝' : '➕'}</button>
+                    <td style={{ padding:'14px 16px', borderBottom:`1px solid ${PW.bg2}`, textAlign:'center', verticalAlign:'middle' }}>
+                      <button onClick={() => setNotesEmail(e)} style={{ background:e.notes?`${PW.blue}15`:'transparent', border:e.notes?`1px solid ${PW.blue}30`:`1px solid ${PW.border}`, borderRadius:8, cursor:'pointer', fontSize:14, padding:'8px 12px', color:e.notes?PW.blue:PW.muted, transition:'all 0.2s ease' }} title={e.notes||'Agregar nota'}>
+                        {e.notes ? '📝' : '➕'}
+                      </button>
                     </td>
                   </tr>
                 ))}
