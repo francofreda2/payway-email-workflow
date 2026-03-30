@@ -26,6 +26,26 @@ from app.outlook import IncomingEmail
 from app.classifier import categorize_email
 from app.notifications import check_pending_alerts
 
+scheduler = AsyncIOScheduler()
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    scheduler.add_job(check_pending_alerts, "interval", minutes=30, id="alerts")
+    scheduler.start()
+    yield
+    scheduler.shutdown()
+
+
+app = FastAPI(title="Payway Email Workflow", lifespan=lifespan)
+app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
+
+STATIC_DIR = Path(__file__).resolve().parent.parent / "static"
+
+if STATIC_DIR.exists():
+    app.mount("/assets", StaticFiles(directory=STATIC_DIR / "assets"), name="assets")
+
+
 @app.get("/api/ai-status")
 def get_ai_status():
     """Diagnóstico del estado de la IA"""
@@ -57,6 +77,36 @@ def get_ai_status():
     return status
 
 
+@app.post("/api/ai-test")
+def test_ai_classification():
+    """Prueba la clasificación de IA con un correo de ejemplo"""
+    test_email = {
+        "subject": "Problema con transacción rechazada - Urgente",
+        "sender": "comercio@ejemplo.com",
+        "body": "Hola, tengo un problema urgente. Mi transacción por $50.000 fue rechazada sin motivo aparente. Necesito que me ayuden a resolverlo cuanto antes porque tengo clientes esperando."
+    }
+    
+    try:
+        from app.classifier import categorize_email
+        result = categorize_email(
+            subject=test_email["subject"],
+            sender=test_email["sender"], 
+            body_preview=test_email["body"]
+        )
+        return {
+            "status": "success",
+            "test_email": test_email,
+            "classification": result
+        }
+    except Exception as e:
+        return {
+            "status": "error",
+            "test_email": test_email,
+            "error": str(e),
+            "error_type": type(e).__name__
+        }
+
+
 @app.get("/api/debug/recent-emails")
 def get_recent_emails_debug(db: Session = Depends(get_db)):
     """Debug: Ver últimos correos y su estado de clasificación"""
@@ -86,25 +136,6 @@ def get_recent_emails_debug(db: Session = Depends(get_db)):
             "sin_categorizar": len([e for e in emails if e.category == "sin_categorizar"])
         }
     }
-
-scheduler = AsyncIOScheduler()
-
-
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    scheduler.add_job(check_pending_alerts, "interval", minutes=30, id="alerts")
-    scheduler.start()
-    yield
-    scheduler.shutdown()
-
-
-app = FastAPI(title="Payway Email Workflow", lifespan=lifespan)
-app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
-
-STATIC_DIR = Path(__file__).resolve().parent.parent / "static"
-
-if STATIC_DIR.exists():
-    app.mount("/assets", StaticFiles(directory=STATIC_DIR / "assets"), name="assets")
 
 
 # Lista de filtros para excluir correos
