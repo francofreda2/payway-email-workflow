@@ -319,6 +319,21 @@ function App() {
     }
   }
   
+  const testAIClassification = async () => {
+    try {
+      const res = await fetch(`${API}/ai-test`, { method: 'POST' })
+      const data = await res.json()
+      if (data.status === 'success') {
+        const c = data.classification
+        alert(`✅ Test exitoso:\n\nCategoría: ${c.category}\nUrgencia: ${c.urgency}\nResumen: ${c.summary}`)
+      } else {
+        alert(`❌ Error: ${data.error_type}: ${data.error}`)
+      }
+    } catch {
+      alert('❌ Error de conexión al probar IA')
+    }
+  }
+
   const checkAIStatus = async () => {
     try {
       const res = await fetch(`${API}/ai-status`)
