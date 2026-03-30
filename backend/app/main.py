@@ -38,6 +38,36 @@ if STATIC_DIR.exists():
     app.mount("/assets", StaticFiles(directory=STATIC_DIR / "assets"), name="assets")
 
 
+# Lista de filtros para excluir correos
+EXCLUDE_SUBJECTS = [
+    "newsletter", "boletín", "información", "noticias", "marketing", 
+    "promoción", "oferta", "descuento", "suscripción", "unsubscribe",
+    "no-reply", "noreply", "automated", "automático", "system"
+]
+
+EXCLUDE_SENDERS = [
+    "noreply", "no-reply", "marketing", "newsletter", "automated",
+    "system", "donotreply", "info@", "news@", "promo@"
+]
+
+def should_exclude_email(subject: str, sender: str) -> bool:
+    """Determina si un correo debe ser excluido del backlog"""
+    subject_lower = subject.lower()
+    sender_lower = sender.lower()
+    
+    # Verificar asunto
+    for exclude_term in EXCLUDE_SUBJECTS:
+        if exclude_term in subject_lower:
+            return True
+    
+    # Verificar remitente
+    for exclude_term in EXCLUDE_SENDERS:
+        if exclude_term in sender_lower:
+            return True
+    
+    return False
+
+
 def classify_in_background(email_id: str, subject: str, sender: str, body: str):
     db = SessionLocal()
     try:
@@ -55,6 +85,10 @@ def classify_in_background(email_id: str, subject: str, sender: str, body: str):
 # --- Webhook: Power Automate manda correos acá ---
 @app.post("/api/emails/ingest")
 def receive_email(data: IncomingEmail, background: BackgroundTasks, db: Session = Depends(get_db)):
+    # Verificar si el correo debe ser excluido
+    if should_exclude_email(data.subject, data.sender):
+        return {"status": "excluded", "reason": "Email filtered out", "subject": data.subject}
+    
     if db.query(Email).filter_by(id=data.message_id).first():
         return {"status": "duplicate", "id": data.message_id}
 
@@ -81,6 +115,53 @@ def receive_email(data: IncomingEmail, background: BackgroundTasks, db: Session 
 
     background.add_task(classify_in_background, data.message_id, data.subject, data.sender, data.body)
     return {"status": "created", "id": email.id}
+
+
+@app.post("/api/emails/reclassify")
+def reclassify_emails(background: BackgroundTasks, db: Session = Depends(get_db)):
+    """Re-clasifica todos los correos sin resumen o con categoría 'sin_categorizar'"""
+    emails = db.query(Email).filter(
+        (Email.summary == None) | 
+        (Email.summary == "") | 
+        (Email.category == "sin_categorizar")
+    ).all()
+    
+    count = 0
+    for email in emails:
+        background.add_task(
+            classify_in_background, 
+            email.id, 
+            email.subject, 
+            email.sender, 
+            email.body_preview
+        )
+        count += 1
+    
+    return {"status": "queued", "count": count, "message": f"Re-clasificando {count} correos en segundo plano"}
+
+
+@app.get("/api/filters")
+def get_filters():
+    """Obtiene la lista actual de filtros"""
+    return {
+        "exclude_subjects": EXCLUDE_SUBJECTS,
+        "exclude_senders": EXCLUDE_SENDERS
+    }
+
+
+from pydantic import BaseModel as PydanticBaseModel
+
+class FilterRequest(PydanticBaseModel):
+    exclude_subjects: list[str]
+    exclude_senders: list[str]
+
+@app.post("/api/filters")
+def update_filters(req: FilterRequest):
+    """Actualiza los filtros de exclusión (solo en memoria)"""
+    global EXCLUDE_SUBJECTS, EXCLUDE_SENDERS
+    EXCLUDE_SUBJECTS = [term.lower().strip() for term in req.exclude_subjects if term.strip()]
+    EXCLUDE_SENDERS = [term.lower().strip() for term in req.exclude_senders if term.strip()]
+    return {"status": "updated", "exclude_subjects": EXCLUDE_SUBJECTS, "exclude_senders": EXCLUDE_SENDERS}
 
 
 # --- Emails CRUD ---

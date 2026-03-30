@@ -22,18 +22,183 @@ const ageBadge = (h) => {
   return <span style={{ display:'inline-flex', alignItems:'center', justifyContent:'center', minWidth:42, height:24, borderRadius:6, padding:'0 8px', fontSize:11, fontWeight:700, background:bg, color:col }}>{h}h</span>
 }
 
-function BarChart({ data, max: maxOverride }) {
+function BarChart({ data, max: maxOverride, showPercentage = false }) {
   const entries = Object.entries(data).sort((a,b) => b[1]-a[1])
   const max = maxOverride || Math.max(...entries.map(e => e[1]), 1)
-  return entries.map(([k,v]) => (
-    <div key={k} style={{ display:'flex', alignItems:'center', gap:10, marginBottom:8 }}>
-      <div style={{ fontSize:11, color:PW.text, width:110, flexShrink:0, whiteSpace:'nowrap', overflow:'hidden', textOverflow:'ellipsis', fontWeight:500 }} title={k}>{k.replace(/_/g,' ')}</div>
-      <div style={{ flex:1, background:PW.bg, borderRadius:3, height:7, overflow:'hidden' }}>
-        <div style={{ height:'100%', borderRadius:3, width:`${v/max*100}%`, background:PW.blue, transition:'width .8s cubic-bezier(.16,1,.3,1)' }} />
+  const total = entries.reduce((sum, [,v]) => sum + v, 0)
+  
+  return entries.map(([k,v]) => {
+    const percentage = total > 0 ? Math.round((v / total) * 100) : 0
+    return (
+      <div key={k} style={{ display:'flex', alignItems:'center', gap:12, marginBottom:10 }}>
+        <div style={{ fontSize:11, color:PW.text, width:120, flexShrink:0, whiteSpace:'nowrap', overflow:'hidden', textOverflow:'ellipsis', fontWeight:600 }} title={k}>{k.replace(/_/g,' ')}</div>
+        <div style={{ flex:1, background:PW.bg2, borderRadius:4, height:8, overflow:'hidden', position:'relative' }}>
+          <div style={{ height:'100%', borderRadius:4, width:`${v/max*100}%`, background:`linear-gradient(90deg, ${PW.blue}, ${PW.mid})`, transition:'width .8s cubic-bezier(.16,1,.3,1)', boxShadow:'inset 0 1px 2px rgba(0,60,150,0.1)' }} />
+        </div>
+        <div style={{ fontSize:11, color:PW.text, width:32, textAlign:'right', flexShrink:0, fontWeight:700 }}>{v}</div>
+        {showPercentage && <div style={{ fontSize:10, color:PW.muted, width:28, textAlign:'right', flexShrink:0 }}>{percentage}%</div>}
       </div>
-      <div style={{ fontSize:11, color:PW.text, width:26, textAlign:'right', flexShrink:0, fontWeight:700 }}>{v}</div>
+    )
+  })
+}
+
+function DonutChart({ data, size = 120 }) {
+  const entries = Object.entries(data).sort((a,b) => b[1]-a[1])
+  const total = entries.reduce((sum, [,v]) => sum + v, 0)
+  if (total === 0) return <div style={{ fontSize:12, color:PW.muted, textAlign:'center', padding:20 }}>Sin datos</div>
+  
+  const colors = [PW.blue, PW.mid, PW.accent, '#8B5CF6', '#F59E0B', '#EF4444', '#10B981', '#6B7280']
+  let currentAngle = 0
+  
+  const segments = entries.map(([key, value], i) => {
+    const percentage = (value / total) * 100
+    const angle = (value / total) * 360
+    const startAngle = currentAngle
+    currentAngle += angle
+    
+    const x1 = 50 + 40 * Math.cos((startAngle - 90) * Math.PI / 180)
+    const y1 = 50 + 40 * Math.sin((startAngle - 90) * Math.PI / 180)
+    const x2 = 50 + 40 * Math.cos((startAngle + angle - 90) * Math.PI / 180)
+    const y2 = 50 + 40 * Math.sin((startAngle + angle - 90) * Math.PI / 180)
+    
+    const largeArc = angle > 180 ? 1 : 0
+    const pathData = `M 50 50 L ${x1} ${y1} A 40 40 0 ${largeArc} 1 ${x2} ${y2} Z`
+    
+    return { key, value, percentage: Math.round(percentage), color: colors[i % colors.length], path: pathData }
+  })
+  
+  return (
+    <div style={{ display:'flex', alignItems:'center', gap:16 }}>
+      <svg width={size} height={size} viewBox="0 0 100 100">
+        {segments.map((seg, i) => (
+          <path key={i} d={seg.path} fill={seg.color} stroke={PW.white} strokeWidth="1" opacity="0.9" />
+        ))}
+        <circle cx="50" cy="50" r="20" fill={PW.white} stroke={PW.border} strokeWidth="1" />
+        <text x="50" y="46" textAnchor="middle" fontSize="8" fill={PW.text} fontWeight="700">{total}</text>
+        <text x="50" y="56" textAnchor="middle" fontSize="5" fill={PW.muted}>TOTAL</text>
+      </svg>
+      <div style={{ flex:1 }}>
+        {segments.slice(0, 6).map(seg => (
+          <div key={seg.key} style={{ display:'flex', alignItems:'center', gap:8, marginBottom:6 }}>
+            <div style={{ width:12, height:12, borderRadius:2, background:seg.color, flexShrink:0 }} />
+            <div style={{ fontSize:11, color:PW.text, flex:1, fontWeight:500 }}>{seg.key.replace(/_/g,' ')}</div>
+            <div style={{ fontSize:11, color:PW.text, fontWeight:700 }}>{seg.value}</div>
+            <div style={{ fontSize:10, color:PW.muted, width:28, textAlign:'right' }}>{seg.percentage}%</div>
+          </div>
+        ))}
+      </div>
     </div>
-  ))
+  )
+}
+
+function TrendChart({ emails }) {
+  const last7Days = Array.from({length: 7}, (_, i) => {
+    const date = new Date()
+    date.setDate(date.getDate() - (6 - i))
+    return date.toISOString().split('T')[0]
+  })
+  
+  const dailyData = last7Days.map(date => {
+    const dayEmails = emails.filter(e => e.received_at?.startsWith(date))
+    return {
+      date,
+      count: dayEmails.length,
+      pending: dayEmails.filter(e => e.status === 'pendiente').length,
+      label: new Date(date).toLocaleDateString('es-AR', { weekday: 'short', day: 'numeric' })
+    }
+  })
+  
+  const maxCount = Math.max(...dailyData.map(d => d.count), 1)
+  
+  return (
+    <div>
+      <div style={{ display:'flex', justifyContent:'space-between', alignItems:'end', height:80, marginBottom:12, padding:'0 4px' }}>
+        {dailyData.map((day, i) => (
+          <div key={i} style={{ display:'flex', flexDirection:'column', alignItems:'center', gap:4, flex:1 }}>
+            <div style={{ display:'flex', flexDirection:'column', alignItems:'center', gap:2, height:60, justifyContent:'end' }}>
+              {day.count > 0 && (
+                <div style={{ width:16, height:`${(day.count/maxCount)*50}px`, background:`linear-gradient(to top, ${PW.blue}, ${PW.mid})`, borderRadius:2, minHeight:4, position:'relative' }}>
+                  {day.pending > 0 && <div style={{ position:'absolute', top:0, left:0, right:0, height:`${(day.pending/day.count)*100}%`, background:PW.red, borderRadius:'2px 2px 0 0', minHeight:2 }} />}
+                </div>
+              )}
+              <div style={{ fontSize:9, color:PW.text, fontWeight:700 }}>{day.count}</div>
+            </div>
+            <div style={{ fontSize:9, color:PW.muted, fontWeight:600, textAlign:'center' }}>{day.label}</div>
+          </div>
+        ))}
+      </div>
+      <div style={{ display:'flex', justifyContent:'center', gap:16, fontSize:9, color:PW.muted }}>
+        <div style={{ display:'flex', alignItems:'center', gap:4 }}>
+          <div style={{ width:8, height:8, background:PW.blue, borderRadius:1 }} />
+          <span>Total</span>
+        </div>
+        <div style={{ display:'flex', alignItems:'center', gap:4 }}>
+          <div style={{ width:8, height:8, background:PW.red, borderRadius:1 }} />
+          <span>Pendientes</span>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function FiltersModal({ open, onClose }) {
+  const [subjects, setSubjects] = useState('')
+  const [senders, setSenders] = useState('')
+  const [loading, setLoading] = useState(false)
+
+  useEffect(() => {
+    if (open) {
+      fetch(`${API}/filters`)
+        .then(res => res.json())
+        .then(data => {
+          setSubjects(data.exclude_subjects.join(', '))
+          setSenders(data.exclude_senders.join(', '))
+        })
+        .catch(() => {})
+    }
+  }, [open])
+
+  const saveFilters = async () => {
+    setLoading(true)
+    try {
+      await fetch(`${API}/filters`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          exclude_subjects: subjects.split(',').map(s => s.trim()).filter(s => s),
+          exclude_senders: senders.split(',').map(s => s.trim()).filter(s => s)
+        })
+      })
+      alert('✅ Filtros actualizados correctamente')
+      onClose()
+    } catch {
+      alert('❌ Error al actualizar filtros')
+    }
+    setLoading(false)
+  }
+
+  if (!open) return null
+  return (
+    <div style={{ position:'fixed', inset:0, background:'rgba(0,34,102,0.4)', display:'flex', alignItems:'center', justifyContent:'center', zIndex:2000 }} onClick={onClose}>
+      <div style={{ background:PW.white, borderRadius:12, width:600, maxWidth:'90vw', boxShadow:'0 12px 40px rgba(0,60,150,0.25)', overflow:'hidden' }} onClick={e => e.stopPropagation()}>
+        <div style={{ background:PW.blue, padding:'14px 20px', color:'#fff', fontSize:13, fontWeight:700 }}>🛡️ Filtros de Exclusión</div>
+        <div style={{ padding:20 }}>
+          <div style={{ marginBottom:16 }}>
+            <div style={{ fontSize:12, fontWeight:600, color:PW.text, marginBottom:6 }}>Asuntos a excluir (separados por comas):</div>
+            <textarea value={subjects} onChange={e => setSubjects(e.target.value)} rows={3} style={{ width:'100%', background:PW.bg, border:`1.5px solid ${PW.border}`, borderRadius:8, padding:12, fontFamily:'inherit', fontSize:12, color:PW.text, outline:'none', resize:'vertical' }} placeholder="newsletter, boletín, información, marketing..." />
+          </div>
+          <div style={{ marginBottom:20 }}>
+            <div style={{ fontSize:12, fontWeight:600, color:PW.text, marginBottom:6 }}>Remitentes a excluir (separados por comas):</div>
+            <textarea value={senders} onChange={e => setSenders(e.target.value)} rows={3} style={{ width:'100%', background:PW.bg, border:`1.5px solid ${PW.border}`, borderRadius:8, padding:12, fontFamily:'inherit', fontSize:12, color:PW.text, outline:'none', resize:'vertical' }} placeholder="noreply, marketing, newsletter, info@..." />
+          </div>
+          <div style={{ display:'flex', justifyContent:'flex-end', gap:8 }}>
+            <button onClick={onClose} style={{ padding:'8px 18px', borderRadius:7, fontSize:12, fontFamily:'inherit', fontWeight:600, cursor:'pointer', border:`1.5px solid ${PW.border}`, background:PW.white, color:PW.muted }}>Cancelar</button>
+            <button onClick={saveFilters} disabled={loading} style={{ padding:'8px 18px', borderRadius:7, fontSize:12, fontFamily:'inherit', fontWeight:700, cursor:'pointer', border:'none', background:PW.blue, color:'#fff' }}>{loading ? 'Guardando...' : 'Guardar'}</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  )
 }
 
 function NotesModal({ email, onSave, onClose }) {
@@ -122,6 +287,7 @@ function App() {
   const [filters, setFilters] = useState({ status:'', category:'', urgency:'', search:'' })
   const [chatOpen, setChatOpen] = useState(false)
   const [notesEmail, setNotesEmail] = useState(null)
+  const [filtersOpen, setFiltersOpen] = useState(false)
 
   const fetchData = useCallback(async () => {
     const params = new URLSearchParams(Object.fromEntries(Object.entries(filters).filter(([,v]) => v)))
@@ -138,6 +304,17 @@ function App() {
     fetchData()
   }
 
+  const reclassifyEmails = async () => {
+    try {
+      const res = await fetch(`${API}/emails/reclassify`, { method: 'POST' })
+      const data = await res.json()
+      alert(`✅ ${data.message}`)
+      setTimeout(fetchData, 2000)
+    } catch {
+      alert('❌ Error al re-clasificar correos')
+    }
+  }
+  
   const resetFilters = () => setFilters({ status:'', category:'', urgency:'', search:'' })
   const hasFilters = Object.values(filters).some(v => v)
 
@@ -168,7 +345,9 @@ function App() {
           </div>
         </div>
         <div style={{ display:'flex', alignItems:'center', gap:12 }}>
-          <span style={{ color:'rgba(255,255,255,0.35)', fontSize:10, fontWeight:500 }}>Auto-sync · Gemini IA</span>
+          <span style={{ color:'rgba(255,255,255,0.35)', fontSize:10, fontWeight:500 }}>Auto-sync · IA Clasificación</span>
+          <button onClick={() => setFiltersOpen(true)} style={{ background:'rgba(255,255,255,0.06)', border:'1px solid rgba(255,255,255,0.1)', color:'rgba(255,255,255,0.7)', borderRadius:6, padding:'6px 12px', fontSize:11, fontWeight:600, cursor:'pointer', fontFamily:'inherit' }}>🛡️ Filtros</button>
+          <button onClick={reclassifyEmails} style={{ background:'rgba(255,255,255,0.08)', border:'1px solid rgba(255,255,255,0.12)', color:'rgba(255,255,255,0.8)', borderRadius:6, padding:'6px 12px', fontSize:11, fontWeight:600, cursor:'pointer', fontFamily:'inherit' }}>Re-clasificar</button>
           <button onClick={() => setChatOpen(o => !o)} style={{ background:'rgba(255,255,255,0.1)', border:'1px solid rgba(255,255,255,0.15)', color:'#fff', borderRadius:8, padding:'8px 16px', fontSize:12, fontWeight:600, cursor:'pointer', fontFamily:'inherit', display:'flex', alignItems:'center', gap:6 }}>🤖 Asistente IA</button>
         </div>
       </div>
@@ -208,31 +387,50 @@ function App() {
 
         {/* KPIs */}
         {stats && (
-          <div style={{ display:'grid', gridTemplateColumns:'repeat(5,1fr)', gap:12, marginBottom:20 }}>
+          <div style={{ display:'grid', gridTemplateColumns:'repeat(6,1fr)', gap:14, marginBottom:24 }}>
             {[
-              { label:'Total Filtrado', value:emails.length, sub:'correos', accent:false },
-              { label:'Pendientes', value:statusMap.pendiente||0, sub:`${emails.length?((statusMap.pendiente||0)/emails.length*100).toFixed(0):0}% del filtro`, accent:false },
-              { label:'En Proceso', value:statusMap.en_proceso||0, sub:'en seguimiento', accent:false },
-              { label:'Antigüedad Prom.', value:`${avgAge}h`, sub:'horas en backlog', accent:false },
-              { label:'Máx. Antigüedad', value:`${maxAge}h`, sub:'correo más antiguo', accent:true },
+              { label:'Total Filtrado', value:emails.length, sub:'correos activos', accent:false, icon:'📊' },
+              { label:'Pendientes', value:statusMap.pendiente||0, sub:`${emails.length?((statusMap.pendiente||0)/emails.length*100).toFixed(0):0}% del filtro`, accent:statusMap.pendiente > 5, icon:'⏳' },
+              { label:'En Proceso', value:statusMap.en_proceso||0, sub:'en seguimiento', accent:false, icon:'🔄' },
+              { label:'Resueltos Hoy', value:emails.filter(e => e.status === 'respondido' && e.age_hours < 24).length, sub:'últimas 24h', accent:false, icon:'✅' },
+              { label:'Antigüedad Prom.', value:`${avgAge}h`, sub:'tiempo en backlog', accent:avgAge > 24, icon:'⏱️' },
+              { label:'Críticos', value:urgMap.critica||0, sub:'requieren atención', accent:(urgMap.critica||0) > 0, icon:'🚨' },
             ].map((k,i) => (
-              <div key={i} style={{ background:PW.white, border:`1px solid ${PW.border}`, borderRadius:10, padding:'18px 20px', borderTop:`3px solid ${k.accent?PW.red:PW.blue}`, boxShadow:'0 1px 3px rgba(0,60,150,0.06)' }}>
-                <div style={{ fontSize:10, color:PW.muted, textTransform:'uppercase', letterSpacing:1, fontWeight:600, marginBottom:8 }}>{k.label}</div>
-                <div style={{ fontSize:32, fontWeight:800, lineHeight:1, letterSpacing:-1, color:k.accent?PW.red:PW.blue }}>{k.value}</div>
-                <div style={{ fontSize:11, color:PW.muted, marginTop:5, fontWeight:500 }}>{k.sub}</div>
+              <div key={i} style={{ background:PW.white, border:`1px solid ${PW.border}`, borderRadius:12, padding:'20px 18px', borderTop:`4px solid ${k.accent?PW.red:PW.blue}`, boxShadow:'0 2px 8px rgba(0,60,150,0.08)', transition:'transform 0.2s ease', cursor:'default' }}>
+                <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', marginBottom:10 }}>
+                  <div style={{ fontSize:10, color:PW.muted, textTransform:'uppercase', letterSpacing:1, fontWeight:700 }}>{k.label}</div>
+                  <span style={{ fontSize:16, opacity:0.7 }}>{k.icon}</span>
+                </div>
+                <div style={{ fontSize:28, fontWeight:800, lineHeight:1, letterSpacing:-0.5, color:k.accent?PW.red:PW.blue, marginBottom:6 }}>{k.value}</div>
+                <div style={{ fontSize:11, color:PW.muted, fontWeight:500 }}>{k.sub}</div>
               </div>
             ))}
           </div>
         )}
 
         {/* CHARTS */}
-        <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr 1fr', gap:12, marginBottom:16 }}>
-          <div style={card}><div style={cardT}><div style={dot} />Categoría (IA)</div>{Object.keys(catMap).length ? <BarChart data={catMap} /> : <div style={{ fontSize:12, color:PW.muted }}>Sin datos</div>}</div>
-          <div style={card}><div style={cardT}><div style={dot} />Urgencia (IA)</div>{Object.keys(urgMap).length ? <BarChart data={urgMap} /> : <div style={{ fontSize:12, color:PW.muted }}>Sin datos</div>}</div>
-          <div style={card}>
+        <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr 1fr 1fr', gap:16, marginBottom:20 }}>
+          <div style={{...card, padding:24}}>
+            <div style={cardT}><div style={dot} />Categoría (IA)</div>
+            {Object.keys(catMap).length ? <BarChart data={catMap} showPercentage={true} /> : <div style={{ fontSize:12, color:PW.muted, textAlign:'center', padding:20 }}>Sin datos</div>}
+          </div>
+          <div style={{...card, padding:24}}>
+            <div style={cardT}><div style={dot} />Urgencia (IA)</div>
+            {Object.keys(urgMap).length ? <DonutChart data={urgMap} size={140} /> : <div style={{ fontSize:12, color:PW.muted, textAlign:'center', padding:20 }}>Sin datos</div>}
+          </div>
+          <div style={{...card, padding:24}}>
             <div style={cardT}><div style={dot} />Carga por Asignado</div>
-            {Object.keys(assignMap).length ? <BarChart data={assignMap} /> : <div style={{ fontSize:12, color:PW.muted }}>Sin datos</div>}
-            {(assignMap['Sin asignar']||0) > 0 && <div style={{ background:PW.light, border:`1px solid ${PW.border}`, borderRadius:7, padding:'10px 14px', marginTop:12, fontSize:11, color:PW.text }}><b style={{ color:PW.blue }}>⚠ {assignMap['Sin asignar']}</b> correo{assignMap['Sin asignar']>1?'s':''} sin responsable</div>}
+            {Object.keys(assignMap).length ? <BarChart data={assignMap} showPercentage={true} /> : <div style={{ fontSize:12, color:PW.muted, textAlign:'center', padding:20 }}>Sin datos</div>}
+            {(assignMap['Sin asignar']||0) > 0 && (
+              <div style={{ background:`${PW.red}08`, border:`1px solid ${PW.red}20`, borderRadius:8, padding:'12px 16px', marginTop:16, fontSize:11, color:PW.text, display:'flex', alignItems:'center', gap:8 }}>
+                <span style={{ fontSize:16 }}>⚠️</span>
+                <span><b style={{ color:PW.red, fontWeight:700 }}>{assignMap['Sin asignar']}</b> correo{assignMap['Sin asignar']>1?'s':''} sin responsable</span>
+              </div>
+            )}
+          </div>
+          <div style={{...card, padding:24}}>
+            <div style={cardT}><div style={dot} />Tendencia (7 días)</div>
+            <TrendChart emails={emails} />
           </div>
         </div>
 
@@ -281,6 +479,7 @@ function App() {
       {!chatOpen && <button onClick={() => setChatOpen(true)} style={{ position:'fixed', bottom:24, right:24, width:56, height:56, borderRadius:'50%', background:`linear-gradient(135deg, ${PW.dark}, ${PW.mid})`, border:'none', color:'#fff', fontSize:24, cursor:'pointer', boxShadow:'0 4px 20px rgba(0,60,150,0.35)', display:'flex', alignItems:'center', justifyContent:'center', zIndex:999 }}>🤖</button>}
       <ChatPanel open={chatOpen} onClose={() => setChatOpen(false)} />
       <NotesModal email={notesEmail} onSave={(id, notes) => updateEmail(id, { notes })} onClose={() => setNotesEmail(null)} />
+      <FiltersModal open={filtersOpen} onClose={() => setFiltersOpen(false)} />
     </div>
   )
 }
