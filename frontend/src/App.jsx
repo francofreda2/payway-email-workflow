@@ -351,30 +351,30 @@ function App() {
     }
   }
   
-  const testAIClassification = async () => {
+  const exportToExcel = async () => {
+    const params = new URLSearchParams()
+    Object.entries(filters).forEach(([k,v]) => {
+      if (v !== '' && v !== false) params.set(k, v)
+      if (k === 'include_closed' && v === false) params.set(k, 'false')
+    })
+    
     try {
-      const res = await fetch(`${API}/ai-test`, { method: 'POST' })
-      const data = await res.json()
-      
-      let message = '🧪 Prueba de Clasificación IA:\n\n'
-      message += `📧 Email de prueba:\n`
-      message += `Asunto: ${data.test_email.subject}\n`
-      message += `De: ${data.test_email.sender}\n\n`
-      
-      if (data.status === 'success') {
-        message += '✅ Clasificación exitosa:\n'
-        message += `🏷️ Categoría: ${data.classification.category}\n`
-        message += `⚡ Urgencia: ${data.classification.urgency}\n`
-        message += `📝 Resumen: ${data.classification.summary}`
+      const res = await fetch(`${API}/emails/export?${params}`)
+      if (res.ok) {
+        const blob = await res.blob()
+        const url = window.URL.createObjectURL(blob)
+        const a = document.createElement('a')
+        a.href = url
+        a.download = `payway_emails_${new Date().toISOString().slice(0,10)}.csv`
+        document.body.appendChild(a)
+        a.click()
+        window.URL.revokeObjectURL(url)
+        document.body.removeChild(a)
       } else {
-        message += `❌ Error en clasificación:\n`
-        message += `Tipo: ${data.error_type}\n`
-        message += `Detalle: ${data.error}`
+        alert('❌ Error al exportar correos')
       }
-      
-      alert(message)
     } catch {
-      alert('❌ Error al probar clasificación de IA')
+      alert('❌ Error al exportar correos')
     }
   }
   
@@ -455,6 +455,9 @@ function App() {
 
         <div style={{ display:'flex', alignItems:'center', gap:8, marginBottom:16, fontSize:11, color:PW.muted, fontWeight:500 }}>
           <b style={{ color:PW.text }}>{emails.length}</b> / {stats?.total||0} correos {hasFilters && <span style={{ color:PW.mid }}>· filtros activos</span>}
+          <button onClick={exportToExcel} style={{ marginLeft:'auto', background:PW.accent, border:'none', color:'#fff', borderRadius:6, padding:'6px 12px', fontSize:11, fontWeight:600, cursor:'pointer', fontFamily:'inherit', display:'flex', alignItems:'center', gap:4 }}>
+            📄 Exportar Excel
+          </button>
         </div>
 
         {/* KPIs */}
@@ -557,8 +560,20 @@ function App() {
                         <span style={{ fontSize:11 }}>{e.sender}</span>
                       </div>
                     </td>
-                    <td style={{ padding:'14px 16px', borderBottom:`1px solid ${PW.bg2}`, verticalAlign:'middle' }}><span style={tag()}>{(e.category||'').replace(/_/g,' ')}</span></td>
-                    <td style={{ padding:'14px 16px', borderBottom:`1px solid ${PW.bg2}`, verticalAlign:'middle' }}><span style={urgStyle(e.urgency)}>{e.urgency}</span></td>
+                    <td style={{ padding:'14px 16px', borderBottom:`1px solid ${PW.bg2}`, verticalAlign:'middle' }}>
+                      <select value={e.category} onChange={ev => updateEmail(e.id, { category:ev.target.value })} style={{...sel, fontSize:11, padding:'6px 10px', minWidth:140, background:PW.white}}>
+                        {['consulta_comercial','soporte_tecnico','reclamo','facturacion','integracion_api','fraude_seguridad','operaciones','regulatorio','interno','otro','sin_categorizar'].map(cat => 
+                          <option key={cat} value={cat}>{cat.replace(/_/g,' ')}</option>
+                        )}
+                      </select>
+                    </td>
+                    <td style={{ padding:'14px 16px', borderBottom:`1px solid ${PW.bg2}`, verticalAlign:'middle' }}>
+                      <select value={e.urgency} onChange={ev => updateEmail(e.id, { urgency:ev.target.value })} style={{...sel, fontSize:11, padding:'6px 10px', minWidth:100, background:PW.white}}>
+                        {['critica','alta','media','baja'].map(urg => 
+                          <option key={urg} value={urg}>{urg}</option>
+                        )}
+                      </select>
+                    </td>
                     <td style={{ padding:'14px 16px', borderBottom:`1px solid ${PW.bg2}`, verticalAlign:'middle' }}>
                       <select value={e.status} onChange={ev => updateEmail(e.id, { status:ev.target.value })} style={{...sel, fontSize:11, padding:'6px 10px', minWidth:120}}>
                         {STATUSES.map(s => <option key={s} value={s}>{SI[s]} {SL[s]}</option>)}

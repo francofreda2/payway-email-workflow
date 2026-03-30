@@ -6,10 +6,13 @@ from datetime import datetime, timezone
 from fastapi import FastAPI, Depends, Query, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from sqlalchemy.orm import Session
 from sqlalchemy import func
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
+import io
+import csv
+from datetime import datetime, timezone
 
 # Configurar logging
 logging.basicConfig(
@@ -107,7 +110,76 @@ def test_ai_classification():
         }
 
 
-@app.get("/api/debug/recent-emails")
+@app.get("/api/emails/export")
+def export_emails_csv(
+    status: str | None = None,
+    category: str | None = None,
+    urgency: str | None = None,
+    search: str | None = None,
+    include_closed: bool = False,
+    db: Session = Depends(get_db),
+):
+    """Exportar correos filtrados a CSV"""
+    q = db.query(Email)
+    
+    # Aplicar los mismos filtros que en list_emails
+    if not include_closed and status != "cerrado":
+        q = q.filter(Email.status != "cerrado")
+    
+    if status:
+        q = q.filter(Email.status == status)
+    if category:
+        q = q.filter(Email.category == category)
+    if urgency:
+        q = q.filter(Email.urgency == urgency)
+    if search:
+        q = q.filter(Email.subject.ilike(f"%{search}%") | Email.sender.ilike(f"%{search}%"))
+
+    emails = q.order_by(Email.received_at.desc()).all()
+    
+    # Crear CSV en memoria
+    output = io.StringIO()
+    writer = csv.writer(output)
+    
+    # Headers
+    writer.writerow([
+        'ID', 'Asunto', 'Remitente', 'Fecha Recibido', 'Categoría', 
+        'Urgencia', 'Estado', 'Asignado', 'Resumen IA', 'Notas', 
+        'Antigüedad (horas)', 'Importancia'
+    ])
+    
+    # Datos
+    now = datetime.now(timezone.utc)
+    for email in emails:
+        received = email.received_at.replace(tzinfo=timezone.utc) if email.received_at.tzinfo is None else email.received_at
+        age_hours = int((now - received).total_seconds() / 3600)
+        
+        writer.writerow([
+            email.id,
+            email.subject,
+            email.sender,
+            email.received_at.strftime('%Y-%m-%d %H:%M:%S') if email.received_at else '',
+            email.category.replace('_', ' ').title(),
+            email.urgency.title(),
+            email.status.replace('_', ' ').title(),
+            email.assigned_to or '',
+            email.summary or '',
+            email.notes or '',
+            age_hours,
+            email.importance
+        ])
+    
+    output.seek(0)
+    
+    # Generar nombre de archivo con timestamp
+    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+    filename = f"payway_emails_{timestamp}.csv"
+    
+    return StreamingResponse(
+        io.BytesIO(output.getvalue().encode('utf-8-sig')),  # UTF-8 BOM para Excel
+        media_type="text/csv",
+        headers={"Content-Disposition": f"attachment; filename={filename}"}
+    )
 def get_recent_emails_debug(db: Session = Depends(get_db)):
     """Debug: Ver últimos correos y su estado de clasificación"""
     emails = db.query(Email).order_by(Email.received_at.desc()).limit(10).all()
@@ -219,7 +291,7 @@ def receive_email(data: IncomingEmail, background: BackgroundTasks, db: Session 
         subject=data.subject,
         sender=data.sender,
         received_at=received,
-        body_preview=data.body[:500] if data.body else "",
+        body_preview=data.body or "",
         category="sin_categorizar",
         urgency="media",
         has_reply=False,
