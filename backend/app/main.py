@@ -28,6 +28,7 @@ from app.schemas import EmailOut, EmailUpdate, StatsOut
 from app.outlook import IncomingEmail
 from app.classifier import categorize_email
 from app.notifications import check_pending_alerts
+from pydantic import BaseModel as PydanticBaseModel
 
 scheduler = AsyncIOScheduler()
 
@@ -345,8 +346,6 @@ def get_filters():
     }
 
 
-from pydantic import BaseModel as PydanticBaseModel
-
 class FilterRequest(PydanticBaseModel):
     exclude_subjects: list[str]
     exclude_senders: list[str]
@@ -409,7 +408,7 @@ def update_email(email_id: str, data: EmailUpdate, db: Session = Depends(get_db)
 
 
 # --- Chat IA: preguntas sobre los correos ---
-from pydantic import BaseModel as PydanticBaseModel
+from app.classifier import strip_html
 
 class ChatRequest(PydanticBaseModel):
     question: str
@@ -417,24 +416,49 @@ class ChatRequest(PydanticBaseModel):
 @app.post("/api/chat")
 def chat_with_ai(req: ChatRequest, db: Session = Depends(get_db)):
     emails = db.query(Email).order_by(Email.received_at.desc()).limit(50).all()
-    context = "\n".join([f"- [{e.status}] De: {e.sender} | Asunto: {e.subject} | Categoría: {e.category} | Urgencia: {e.urgency} | Resumen: {e.summary or 'N/A'} | Asignado: {e.assigned_to or 'Sin asignar'} | Antigüedad: {e.id}" for e in emails])
+    now = datetime.now(timezone.utc)
+
+    lines = []
+    for e in emails:
+        received = e.received_at.replace(tzinfo=timezone.utc) if e.received_at and e.received_at.tzinfo is None else e.received_at
+        age_h = int((now - received).total_seconds() / 3600) if received else 0
+        body_clean = strip_html(e.body_preview or "")[:300]
+        lines.append(
+            f"- [{e.status}] Asunto: {e.subject} | De: {e.sender} | "
+            f"Categoría: {e.category} | Urgencia: {e.urgency} | "
+            f"Resumen: {e.summary or 'Sin resumen'} | "
+            f"Asignado: {e.assigned_to or 'Sin asignar'} | "
+            f"Antigüedad: {age_h}h | "
+            f"Contenido: {body_clean}"
+        )
+    context = "\n".join(lines)
 
     s = get_settings()
     url = f"https://generativelanguage.googleapis.com/v1beta/models/{s.gemini_model}:generateContent?key={s.gemini_api_key}"
-    prompt = f"""Sos un asistente de gestión de correos de Payway (procesadora de medios de pago). Tenés acceso al backlog de correos actual. Respondé en español, de forma concisa y útil.
+    prompt = f"""Sos un asistente de gestión de correos de Payway (procesadora de medios de pago en Argentina). Tenés acceso al backlog de correos actual.
+
+REGLAS DE RESPUESTA:
+- Respondé siempre en español argentino, de forma concisa y directa
+- NO uses markdown (nada de **, ##, *, etc). Usá texto plano
+- Para listas usá guiones simples (-) o números
+- Si te preguntan por un correo específico, incluí: asunto, remitente, categoría, urgencia, estado, resumen y contenido relevante
+- Si te piden análisis o resumen general, agrupá por categoría o urgencia según corresponda
+- Si no encontrás lo que piden, decilo claramente
 
 Backlog actual ({len(emails)} correos):
 {context}
 
-Pregunta del usuario: {req.question}"""
+Pregunta: {req.question}"""
 
     try:
         resp = httpx.post(url, json={
             "contents": [{"parts": [{"text": prompt}]}],
-            "generationConfig": {"temperature": 0.3, "maxOutputTokens": 500},
+            "generationConfig": {"temperature": 0.3, "maxOutputTokens": 800},
         }, timeout=30)
         resp.raise_for_status()
         text = resp.json()["candidates"][0]["content"]["parts"][0]["text"]
+        # Limpiar markdown residual por si Gemini lo mete igual
+        text = text.replace("**", "").replace("##", "").replace("# ", "")
         return {"answer": text}
     except Exception as ex:
         return {"answer": f"Error al consultar IA: {str(ex)}"}
